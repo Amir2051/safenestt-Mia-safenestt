@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { chat } from '../services/aiService.js';
+import { chatAgentStream } from '../services/aiService.js';
 import {
   createConversation, getSessionConversations, deleteConversation,
   saveMessage, getConversationMessages, updateConversationTitle
@@ -7,7 +7,6 @@ import {
 
 const router = Router();
 
-// Wrap Supabase calls so missing/bad credentials don't crash the server
 async function tryDB(fn) {
   try { return await fn(); } catch { return null; }
 }
@@ -36,7 +35,7 @@ router.get('/conversations/:id/messages', async (req, res) => {
   res.json(data || []);
 });
 
-// POST /api/chat/stream — streaming SSE (AI works even if DB is down)
+// POST /api/chat/stream — agentic SSE stream with tool use
 router.post('/stream', async (req, res, next) => {
   try {
     const { content, history = [], conversation_id } = req.body;
@@ -57,21 +56,26 @@ router.post('/stream', async (req, res, next) => {
     }
     if (convId) await tryDB(() => saveMessage({ conversation_id: convId, role: 'user', content }));
 
-    // Stream AI response
+    // Build message list
     const messages = [...history.slice(-20), { role: 'user', content }];
-    const stream   = await chat({ messages, stream: true });
 
+    // Agentic stream
     let full = '';
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta') {
-        const delta = event.delta.text;
-        full += delta;
-        res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+    const agentStream = chatAgentStream(messages);
+
+    for await (const event of agentStream) {
+      if (event.type === 'delta') {
+        full += event.text;
+        res.write(`data: ${JSON.stringify({ delta: event.text })}\n\n`);
+      } else if (event.type === 'tool_start') {
+        res.write(`data: ${JSON.stringify({ tool_call: { name: event.name, input: event.input } })}\n\n`);
+      } else if (event.type === 'tool_done') {
+        res.write(`data: ${JSON.stringify({ tool_result: { name: event.name } })}\n\n`);
       }
     }
 
-    // Save AI reply (best-effort)
-    if (convId) {
+    // Persist AI reply (best-effort)
+    if (convId && full) {
       await tryDB(() => saveMessage({ conversation_id: convId, role: 'assistant', content: full }));
       if (!history.length) tryDB(() => updateConversationTitle(convId, content.slice(0, 60)));
     }

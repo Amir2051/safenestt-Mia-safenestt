@@ -1,7 +1,6 @@
 'use client';
 import { useState, useCallback, useRef } from 'react';
 
-// Use empty string so all /api/* calls go through the Next.js proxy
 const API = '';
 
 export function useChat(getSessionId) {
@@ -12,8 +11,8 @@ export function useChat(getSessionId) {
   const abortRef = useRef(null);
 
   const headers = useCallback(() => ({
-    'Content-Type':  'application/json',
-    'X-Session-ID':  getSessionId()
+    'Content-Type': 'application/json',
+    'X-Session-ID': getSessionId(),
   }), [getSessionId]);
 
   const loadConversations = useCallback(async () => {
@@ -51,9 +50,14 @@ export function useChat(getSessionId) {
     setStreaming(true);
 
     const placeholderId = Date.now() + 1;
-    setMessages(prev => [...prev, { role: 'assistant', content: '', id: placeholderId, streaming: true }]);
+    setMessages(prev => [...prev, {
+      role: 'assistant', content: '', id: placeholderId,
+      streaming: true, tool_calls: [],
+    }]);
 
     let currentConvId = activeConversation?.id;
+    // Track active tool calls for the current placeholder
+    const activeTools = [];
 
     try {
       abortRef.current = new AbortController();
@@ -61,7 +65,7 @@ export function useChat(getSessionId) {
         method:  'POST',
         headers: headers(),
         body:    JSON.stringify({ content, history, conversation_id: currentConvId }),
-        signal:  abortRef.current.signal
+        signal:  abortRef.current.signal,
       });
 
       if (!res.ok) throw new Error('Stream failed');
@@ -73,22 +77,47 @@ export function useChat(getSessionId) {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+
         const lines = decoder.decode(value).split('\n').filter(l => l.startsWith('data: '));
         for (const line of lines) {
           const payload = line.slice(6);
           if (payload === '[DONE]') break;
+
           try {
             const parsed = JSON.parse(payload);
-            // Backend sends conversation_id on first chunk when auto-created
+
             if (parsed.conversation_id && !currentConvId) {
               currentConvId = parsed.conversation_id;
               setActiveConversation({ id: currentConvId, title: content.slice(0, 60) });
             }
+
             if (parsed.delta) {
               full += parsed.delta;
               setMessages(prev => prev.map(m =>
                 m.id === placeholderId ? { ...m, content: full } : m
               ));
+            }
+
+            // Tool execution started
+            if (parsed.tool_call) {
+              const toolEntry = { name: parsed.tool_call.name, input: parsed.tool_call.input, status: 'running' };
+              activeTools.push(toolEntry);
+              setMessages(prev => prev.map(m =>
+                m.id === placeholderId ? { ...m, tool_calls: [...(m.tool_calls || []), toolEntry] } : m
+              ));
+            }
+
+            // Tool execution finished
+            if (parsed.tool_result) {
+              const idx = activeTools.findLastIndex(t => t.name === parsed.tool_result.name && t.status === 'running');
+              if (idx !== -1) activeTools[idx].status = 'done';
+              setMessages(prev => prev.map(m => {
+                if (m.id !== placeholderId) return m;
+                const updated = [...(m.tool_calls || [])];
+                const tidx = updated.findLastIndex(t => t.name === parsed.tool_result.name && t.status === 'running');
+                if (tidx !== -1) updated[tidx] = { ...updated[tidx], status: 'done' };
+                return { ...m, tool_calls: updated };
+              }));
             }
           } catch {}
         }
@@ -119,6 +148,6 @@ export function useChat(getSessionId) {
   return {
     conversations, activeConversation, messages, streaming,
     loadConversations, selectConversation, newConversation,
-    deleteConversation, sendMessage, stopStreaming
+    deleteConversation, sendMessage, stopStreaming,
   };
 }

@@ -1,0 +1,25 @@
+{
+  "name": "mia-cli",
+  "version": "2.0.0",
+  "description": "Mia — Intelligence Terminal by Ronzoro · SafeNestT · RZ Core",
+  "type": "module",
+  "bin": { "mia": "./mia.js" },
+  "scripts": {
+    "start": "node mia.js",
+    "dev":   "node --watch mia.js",
+    "link":  "npm link"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.36.0",
+    "better-sqlite3":    "^9.4.3",
+    "boxen":             "^7.1.1",
+    "chalk":             "^5.3.0",
+    "cli-table3":        "^0.6.3",
+    "commander":         "^12.0.0",
+    "dotenv":            "^16.4.5",
+    "node-fetch":        "^3.3.2",
+    "ora":               "^8.0.1",
+    "pdf-parse":         "^1.1.1",
+    "readline":          "^1.3.0"
+  }
+}
