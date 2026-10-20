@@ -3,6 +3,11 @@ import dotenv from 'dotenv';
 import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { randomBytes } from 'node:crypto';
+import {
+  localCreateConversation, localGetSessionConversations, localUpdateConversationTitle,
+  localSaveMessage, localGetConversationMessages, localDeleteConversation, localMarkConversationUpdated,
+  localConversationBelongsToSession
+} from './localStore.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 dotenv.config({ path: resolve(__dirname, '../../.env') });
@@ -93,69 +98,118 @@ export async function getUserById(id) {
 
 // ── Conversations ─────────────────────────────────────────────────────────────
 export async function createConversation(sessionId, title = 'New Chat') {
-  const { data, error } = await supabase
-    .from('conversations')
-    .insert({ session_id: sessionId, title })
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .insert({ session_id: sessionId, title })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  } catch (error) {
+    if (error?.message !== 'Supabase not configured') throw error;
+    return localCreateConversation(sessionId, title);
+  }
 }
 
 export async function getSessionConversations(sessionId) {
-  const { data, error } = await supabase
-    .from('conversations')
-    .select('*')
-    .eq('session_id', sessionId)
-    .order('updated_at', { ascending: false })
-    .limit(50);
-  if (error) throw error;
-  return data;
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('updated_at', { ascending: false })
+      .limit(50);
+    if (error) throw error;
+    return data;
+  } catch (error) {
+    if (error?.message !== 'Supabase not configured') throw error;
+    return localGetSessionConversations(sessionId);
+  }
 }
 
 export async function updateConversationTitle(id, title) {
-  const { error } = await supabase
-    .from('conversations')
-    .update({ title, updated_at: new Date().toISOString() })
-    .eq('id', id);
-  if (error) throw error;
+  try {
+    const { error } = await supabase
+      .from('conversations')
+      .update({ title, updated_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw error;
+  } catch (error) {
+    if (error?.message !== 'Supabase not configured') throw error;
+    localUpdateConversationTitle(id, title);
+  }
 }
 
 export async function deleteConversation(id, sessionId) {
-  const { error } = await supabase
-    .from('conversations')
-    .delete()
-    .eq('id', id)
-    .eq('session_id', sessionId);
-  if (error) throw error;
+  try {
+    const { error } = await supabase
+      .from('conversations')
+      .delete()
+      .eq('id', id)
+      .eq('session_id', sessionId);
+    if (error) throw error;
+  } catch (error) {
+    if (error?.message !== 'Supabase not configured') throw error;
+    localDeleteConversation(id, sessionId);
+  }
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 export async function saveMessage({ conversation_id, role, content }) {
-  const { data, error } = await supabase
-    .from('messages')
-    .insert({ conversation_id, role, content })
-    .select()
-    .single();
-  if (error) throw error;
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .insert({ conversation_id, role, content })
+      .select()
+      .single();
+    if (error) throw error;
 
-  await supabase
-    .from('conversations')
-    .update({ updated_at: new Date().toISOString() })
-    .eq('id', conversation_id);
+    await supabase
+      .from('conversations')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', conversation_id);
 
-  return data;
+    return data;
+  } catch (error) {
+    if (error?.message !== 'Supabase not configured') throw error;
+    localSaveMessage({ conversation_id, role, content });
+    localMarkConversationUpdated(conversation_id);
+    return { id: null, conversation_id, role, content, created_at: new Date().toISOString() };
+  }
 }
 
-export async function getConversationMessages(conversationId, limit = 100) {
-  const { data, error } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: true })
-    .limit(limit);
-  if (error) throw error;
-  return data;
+export async function conversationBelongsToSession(conversationId, sessionId) {
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('id')
+      .eq('id', conversationId)
+      .eq('session_id', sessionId)
+      .maybeSingle();
+    if (error) throw error;
+    return Boolean(data);
+  } catch (error) {
+    if (error?.message !== 'Supabase not configured') throw error;
+    return localConversationBelongsToSession(conversationId, sessionId);
+  }
+}
+
+export async function getConversationMessages(conversationId, sessionId, limit = 100) {
+  if (!await conversationBelongsToSession(conversationId, sessionId)) return [];
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: true })
+      .limit(limit);
+    if (error) throw error;
+    return data;
+  } catch (error) {
+    if (error?.message !== 'Supabase not configured') throw error;
+    return localGetConversationMessages(conversationId, sessionId, limit);
+  }
 }
 
 export default supabase;

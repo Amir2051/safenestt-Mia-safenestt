@@ -2,22 +2,11 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import {
-  LayoutDashboard, FolderOpen, Shield, Bell, Link2,
-  FileText, MessageSquare, BookOpen, ChevronLeft, ChevronRight, Search,
-} from 'lucide-react';
+import { MessageSquare, ChevronLeft, ChevronRight } from 'lucide-react';
 import MiaFace from './MiaFace';
 
 const NAV = [
-  { href: '/dashboard', icon: LayoutDashboard, label: 'Dashboard',      tag: '01' },
-  { href: '/cases',     icon: FolderOpen,       label: 'Cases',          tag: '02' },
-  { href: '/osint',     icon: Search,            label: 'OSINT',          tag: '03' },
-  { href: '/crypto',    icon: Shield,            label: 'Crypto Scan',    tag: '04' },
-  { href: '/tracking',  icon: Link2,             label: 'Tracking Links', tag: '05' },
-  { href: '/alerts',    icon: Bell,              label: 'Alerts',         tag: '06' },
-  { href: '/reports',   icon: FileText,          label: 'Reports',        tag: '07' },
-  { href: '/chat',      icon: MessageSquare,     label: 'Mia AI Chat',    tag: '08' },
-  { href: '/guidance',  icon: BookOpen,          label: 'Guidance',       tag: '09' },
+  { href: '/chat', icon: MessageSquare, label: 'MIA Chat', tag: '01' },
 ];
 
 function FloatingMia() {
@@ -178,7 +167,7 @@ export default function AppShell({ children }) {
                 boxShadow: '0 0 18px rgba(0,255,65,.25), inset 0 0 10px rgba(0,255,65,.05)',
               }}
             >
-              S
+              M
               <div className="absolute top-0.5 right-0.5 w-0.5 h-0.5 rounded-full" style={{ background: '#00ff41', opacity: .7 }} />
               <div className="absolute bottom-0.5 left-0.5 w-0.5 h-0.5 rounded-full" style={{ background: '#00ff41', opacity: .4 }} />
             </div>
@@ -189,10 +178,10 @@ export default function AppShell({ children }) {
                   className="font-black text-xs font-mono glitch"
                   style={{ color: '#00ff41', letterSpacing: '0.18em', textShadow: '0 0 14px rgba(0,255,65,.65)' }}
                 >
-                  SAFENEST T
+                  RONZORO AI
                 </p>
                 <p className="font-mono opacity-35" style={{ fontSize: 8, letterSpacing: '.12em', color: 'rgba(0,255,65,.5)' }}>
-                  ◈ Investigation Platform
+                  ◈ Personal AI Assistant
                 </p>
               </div>
             )}

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { chatAgentStream } from '../services/aiService.js';
 import {
   createConversation, getSessionConversations, deleteConversation,
-  saveMessage, getConversationMessages, updateConversationTitle
+  saveMessage, getConversationMessages, updateConversationTitle, conversationBelongsToSession
 } from '../services/supabaseService.js';
 
 const router = Router();
@@ -31,7 +31,7 @@ router.delete('/conversations/:id', async (req, res) => {
 
 // GET /api/chat/conversations/:id/messages
 router.get('/conversations/:id/messages', async (req, res) => {
-  const data = await tryDB(() => getConversationMessages(req.params.id));
+  const data = await tryDB(() => getConversationMessages(req.params.id, req.sessionId));
   res.json(data || []);
 });
 
@@ -53,6 +53,9 @@ router.post('/stream', async (req, res, next) => {
         convId = conv.id;
         res.write(`data: ${JSON.stringify({ conversation_id: convId })}\n\n`);
       }
+    }
+    if (convId && !await tryDB(() => conversationBelongsToSession(convId, req.sessionId))) {
+      return res.status(404).json({ error: 'Conversation not found' });
     }
     if (convId) await tryDB(() => saveMessage({ conversation_id: convId, role: 'user', content }));
 
@@ -83,6 +86,24 @@ router.post('/stream', async (req, res, next) => {
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (err) { next(err); }
+});
+
+// GET /api/model/status — provider/model and availability (no secrets)
+router.get('/model/status', (req, res) => {
+  const aiProvider = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
+  const aiModel = process.env.AI_MODEL || 'claude-sonnet-4-6';
+  const ollamaBase = (process.env.OLLAMA_BASE || 'http://localhost:11434').replace(/\/+$/, '');
+  let configured = {};
+  if (aiProvider === 'anthropic') configured = { anthropic: !!process.env.ANTHROPIC_API_KEY };
+  else if (aiProvider === 'openrouter') configured = { openrouter: !!process.env.OPENROUTER_API_KEY };
+  else if (aiProvider === 'ollama') configured = { ollama: true };
+  res.json({
+    aiProvider,
+    aiModel,
+    ollamaBase,
+    configured,
+    note: 'Model availability is checked at runtime (no secrets returned).',
+  });
 });
 
 export default router;

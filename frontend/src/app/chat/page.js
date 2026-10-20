@@ -1,11 +1,7 @@
 'use client';
-import AppShell from '@/components/AppShell';
-import ChatLayout from '@/components/ChatLayout';
+
+import ChatWorkspace from '@/components/ChatWorkspace';
 
 export default function ChatPage() {
-  return (
-    <AppShell>
-      <ChatLayout embedded />
-    </AppShell>
-  );
+  return <ChatWorkspace />;
 }

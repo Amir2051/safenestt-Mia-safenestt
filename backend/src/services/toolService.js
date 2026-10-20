@@ -1,28 +1,21 @@
-import { runOsint } from './osintService.js';
-
-// ── helpers ──────────────────────────────────────────────────────────────────
+import { safeFetchURL, validateFetchTarget, resolveAndValidateFetchTarget } from '../utils/fetchSecurity.js';
 
 async function fjson(url, opts = {}) {
+  const r = await safeFetchURL(url, opts);
+  if (r._error) return r;
+  if (!r.ok) return { _error: `HTTP ${r.status}` };
   try {
-    const r = await fetch(url, {
-      headers: { 'User-Agent': 'MiaAI/2.0', ...opts.headers },
-      signal: AbortSignal.timeout(14000),
-      ...opts,
-    });
-    if (!r.ok) return { _error: `HTTP ${r.status}` };
-    return r.json();
-  } catch (e) { return { _error: e.message }; }
+    return JSON.parse(r.text || '{}');
+  } catch {
+    return { _error: 'Invalid JSON response' };
+  }
 }
 
 async function ftext(url, opts = {}) {
-  try {
-    const r = await fetch(url, {
-      headers: { 'User-Agent': 'MiaAI/2.0', ...opts.headers },
-      signal: AbortSignal.timeout(14000),
-    });
-    if (!r.ok) return { _error: `HTTP ${r.status}` };
-    return { text: await r.text() };
-  } catch (e) { return { _error: e.message }; }
+  const r = await safeFetchURL(url, opts);
+  if (r._error) return r;
+  if (!r.ok) return { _error: `HTTP ${r.status}` };
+  return { text: r.text || '' };
 }
 
 // ── 1. WEB SEARCH ─────────────────────────────────────────────────────────────
@@ -39,23 +32,21 @@ export async function webSearch(query) {
 
   const results = {};
 
-  // DuckDuckGo instant answers
   const ddg = ddgRes.status === 'fulfilled' ? ddgRes.value : null;
   if (ddg && !ddg._error) {
     if (ddg.Answer)     results.instant_answer  = ddg.Answer;
     if (ddg.Abstract)   results.abstract        = { text: ddg.Abstract, source: ddg.AbstractSource, url: ddg.AbstractURL };
     if (ddg.Definition) results.definition      = { text: ddg.Definition, url: ddg.DefinitionURL };
+    if (ddg.Infobox?.content?.length) {
+      results.infobox = ddg.Infobox.content.slice(0, 8).map(c => ({ label: c.label, value: String(c.value).slice(0, 200) }));
+    }
     if (ddg.RelatedTopics?.length) {
       results.related = ddg.RelatedTopics.slice(0, 6)
         .filter(t => t.Text)
         .map(t => ({ text: t.Text?.slice(0, 200), url: t.FirstURL }));
     }
-    if (ddg.Infobox?.content?.length) {
-      results.infobox = ddg.Infobox.content.slice(0, 8).map(c => ({ label: c.label, value: String(c.value).slice(0, 200) }));
-    }
   }
 
-  // HackerNews
   const hn = hnRes.status === 'fulfilled' ? hnRes.value : null;
   if (hn?.hits?.length) {
     results.hacker_news = hn.hits.slice(0, 5).map(h => ({
@@ -64,7 +55,6 @@ export async function webSearch(query) {
     })).filter(h => h.title);
   }
 
-  // Reddit
   const rdt = rdtRes.status === 'fulfilled' ? rdtRes.value : null;
   if (rdt?.data?.children?.length) {
     results.reddit = rdt.data.children.slice(0, 5).map(c => ({
@@ -76,7 +66,6 @@ export async function webSearch(query) {
     }));
   }
 
-  // GDELT news
   const gdelt = gdeltRes.status === 'fulfilled' ? gdeltRes.value : null;
   if (gdelt?.articles?.length) {
     results.news = gdelt.articles.slice(0, 5).map(a => ({
@@ -90,7 +79,21 @@ export async function webSearch(query) {
 // ── 2. READ WEBPAGE ───────────────────────────────────────────────────────────
 
 export async function readWebpage(url) {
-  const res = await ftext(`https://r.jina.ai/${url}`, {
+  if (!url || typeof url !== 'string') return { error: 'Missing URL' };
+  const trimmed = url.trim();
+
+  const directValidation = validateFetchTarget(trimmed);
+  if (!directValidation.ok) {
+    return { error: `Target URL is not allowed: ${directValidation.error}`, url };
+  }
+  if (directValidation.hostClass === 'hostname') {
+    const resolved = await resolveAndValidateFetchTarget(trimmed);
+    if (!resolved.ok) {
+      return { error: `Target URL is not allowed: ${resolved.error}`, url };
+    }
+  }
+
+  const res = await ftext(`https://r.jina.ai/${trimmed}`, {
     headers: { 'Accept': 'text/plain,application/json', 'X-Return-Format': 'markdown' },
   });
   if (res._error) return { error: res._error, url };
@@ -288,7 +291,6 @@ export function calculate(expression) {
   try {
     const sanitized = expression.replace(/[^0-9+\-*/.()%^,\s]/g, '').trim();
     if (!sanitized) return { error: 'Invalid expression' };
-    // eslint-disable-next-line no-new-func
     const result = new Function(`"use strict"; return (${sanitized})`)();
     if (typeof result !== 'number' || !isFinite(result)) return { error: 'Result is not a finite number' };
     return { expression: sanitized, result, formatted: result.toLocaleString('en-US', { maximumFractionDigits: 10 }) };
@@ -370,7 +372,7 @@ export async function getNews(query, count = 8) {
 export async function getMyIp() {
   const [ip4, geo] = await Promise.allSettled([
     fjson('https://api.ipify.org?format=json'),
-    fjson('http://ip-api.com/json/'),
+    fjson('https://ip-api.com/json/'),
   ]);
   return {
     public_ip: ip4.status === 'fulfilled' ? ip4.value?.ip : null,
@@ -397,12 +399,11 @@ export async function searchBooks(query) {
   };
 }
 
-// ── 14. MOVIE / TV (OMDB — free key) ──────────────────────────────────────────
+// ── 14. MOVIE / TV (OMDB — free key) ─────────────────────────────────────────
 
 export async function searchMovies(query) {
   const key = process.env.OMDB_API_KEY || '';
   if (!key) {
-    // Fallback: Wikipedia search
     const wiki = await wikipediaSearch(query + ' film');
     return { note: 'OMDB_API_KEY not set, using Wikipedia', ...wiki };
   }
@@ -444,7 +445,6 @@ export async function executeTool(name, input) {
       case 'search_movies':     return searchMovies(input.query);
       case 'get_joke':          return getJoke(input.type);
       case 'get_my_ip':         return getMyIp();
-      case 'osint_investigate': return { results: await runOsint(input.target, input.type) };
       default:                  return { error: `Unknown tool: ${name}` };
     }
   } catch (e) {
@@ -588,27 +588,12 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'get_joke',
     description: 'Get a random joke. Great for lightening the mood.',
-    input_schema: {
-      type: 'object',
-      properties: { type: { type: 'string', enum: ['any', 'programming', 'pun', 'misc', 'dark', 'spooky', 'christmas'], default: 'any' } },
-      required: [],
-    },
-  },
-  {
-    name: 'get_my_ip',
-    description: 'Get the server\'s public IP address and geolocation.',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
-    name: 'osint_investigate',
-    description: 'Run full OSINT investigation on an IP address, domain, email, username, phone number, URL, file hash, or person name.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        target: { type: 'string', description: 'The target to investigate' },
-        type:   { type: 'string', enum: ['ip', 'domain', 'email', 'username', 'phone', 'url', 'hash', 'person'], description: 'Target type' },
-      },
-      required: ['target', 'type'],
-    },
+    name: 'get_my_ip',
+    description: "Get the server's public IP address and geolocation.",
+    input_schema: { type: 'object', properties: {}, required: [] },
   },
+
 ];

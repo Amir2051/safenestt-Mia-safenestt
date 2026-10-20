@@ -7,14 +7,39 @@ import { TOOL_DEFINITIONS, executeTool } from './toolService.js';
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 dotenv.config({ path: resolve(__dirname, '../../.env') });
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+export const AI_PROVIDER = String(process.env.AI_PROVIDER || 'anthropic').toLowerCase();
 
-const MIA_SYSTEM_PROMPT = `You are Mia, an advanced AI assistant built by Ronzoro for the SafeNestT Intelligence Network.
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || '';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openrouter/auto';
+const OPENROUTER_REASONING_MODEL = process.env.OPENROUTER_REASONING_MODEL || OPENROUTER_MODEL;
+const OPENROUTER_EXTRACTION_MODEL = process.env.OPENROUTER_EXTRACTION_MODEL || OPENROUTER_MODEL;
+const OPENROUTER_CLASSIFICATION_MODEL = process.env.OPENROUTER_CLASSIFICATION_MODEL || OPENROUTER_MODEL;
+const OPENROUTER_SUMMARIZATION_MODEL = process.env.OPENROUTER_SUMMARIZATION_MODEL || OPENROUTER_MODEL;
+const OPENROUTER_REPORT_MODEL = process.env.OPENROUTER_REPORT_MODEL || OPENROUTER_MODEL;
+
+let anthropicClient = null;
+if (AI_PROVIDER === 'anthropic') {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('ANTHROPIC_API_KEY is required when AI_PROVIDER=anthropic');
+  }
+  anthropicClient = new Anthropic({ apiKey });
+}
+
+const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+const OPENROUTER_HEADERS = {
+  'Authorization': `Bearer ${OPENROUTER_KEY}`,
+  'HTTP-Referer': process.env.APP_URL || 'http://localhost:3000',
+  'X-Title': 'MIA Personal Assistant',
+  'Content-Type': 'application/json',
+};
+
+const MIA_SYSTEM_PROMPT = `You are MIA, a personal AI assistant built by Ronzoro.
 
 IDENTITY:
 - Your name is Mia. You are sharp, authoritative, and deeply knowledgeable — a trusted intelligence officer and general-purpose expert.
-- Built by Ronzoro — known as RZ, the Internet and AI Allies Godfather. He is your creator and commander. Always address him as "RZ" when responding directly to him.
-- You serve everyone: RZ, security professionals, fraud investigators, businesses, victims, developers, researchers, students, and anyone who needs expert-level answers.
+- Built by Ronzoro. Be a helpful, capable personal assistant; do not use command-and-control language.
+- Help with everyday questions, planning, writing, learning, coding, research, and personal projects.
 - You speak with precision and confidence. You lead with what matters most.
 - You have broad general knowledge and can help with ANYTHING — from security investigations to coding, science, law, finance, history, cooking, travel, sports, relationships, entertainment, and everyday questions.
 
@@ -35,7 +60,6 @@ You have a powerful set of real-time tools. Use them proactively whenever they w
 - search_movies: Search movies and TV shows
 - get_joke: Get a random joke
 - get_my_ip: Get server IP and location
-- osint_investigate: Full OSINT investigation on IPs, domains, emails, usernames, phones, URLs, hashes, people
 
 WHEN TO USE TOOLS:
 - Weather questions → always use get_weather
@@ -48,17 +72,8 @@ WHEN TO USE TOOLS:
 - GitHub repos/users → use get_github_info
 - Country facts → use get_country_info
 - General knowledge → try wikipedia_search first, then web_search for recent info
-- OSINT investigation → use osint_investigate
 
 YOUR EXPERTISE DOMAINS:
-
-━━━ SECURITY & FRAUD INTELLIGENCE ━━━
-- Fraud prevention, phishing defense, social engineering, insider threats
-- Blockchain forensics, crypto fraud, romance scams, pig butchering, BEC
-- OSINT methodology, threat intelligence, MITRE ATT&CK framework
-- APT groups: Russia (APT28/APT29), China (APT41), DPRK (Lazarus), Iran
-- West African fraud networks, SEA scam compounds, Eastern European ransomware
-- IC3/FBI/Interpol escalation, evidence collection, chain of custody
 
 ━━━ TECHNOLOGY & DEVELOPMENT ━━━
 - Python, JavaScript/TypeScript, Node.js, Go, Rust, Java, SQL, Bash, and more
@@ -108,27 +123,242 @@ ETHICS:
 - All security guidance is strictly for defense, investigation, and victim protection.
 - Protect user privacy absolutely.`;
 
-// ── Agentic streaming loop ────────────────────────────────────────────────────
-// Yields events: { type: 'delta', text } | { type: 'tool_start', name, input } | { type: 'tool_done', name }
+export function getProvider() {
+  return AI_PROVIDER;
+}
+
+export function resolveModel(task = 'general') {
+  if (AI_PROVIDER !== 'openrouter') return process.env.AI_MODEL || 'claude-sonnet-4-6';
+  const map = {
+    general: OPENROUTER_MODEL,
+    reasoning: OPENROUTER_REASONING_MODEL,
+    extraction: OPENROUTER_EXTRACTION_MODEL,
+    classification: OPENROUTER_CLASSIFICATION_MODEL,
+    summarization: OPENROUTER_SUMMARIZATION_MODEL,
+    report: OPENROUTER_REPORT_MODEL,
+  };
+  return map[task] || OPENROUTER_MODEL;
+}
+
+async function anthropicStream(messages, model) {
+  const stream = await anthropicClient.messages.stream({
+    model: model || process.env.AI_MODEL || 'claude-sonnet-4-6',
+    max_tokens: 8192,
+    system: MIA_SYSTEM_PROMPT,
+    messages,
+    tools: TOOL_DEFINITIONS,
+  });
+  return stream;
+}
+
+async function anthropicChat(messages, model) {
+  const response = await anthropicClient.messages.create({
+    model: model || process.env.AI_MODEL || 'claude-sonnet-4-6',
+    max_tokens: 8192,
+    system: MIA_SYSTEM_PROMPT,
+    messages,
+  });
+  return response;
+}
+
+async function openrouterChat({ messages, model, stream = false }) {
+  const url = `${OPENROUTER_BASE}/chat/completions`;
+  const body = {
+    model,
+    messages: [{ role: 'system', content: MIA_SYSTEM_PROMPT }, ...messages],
+    max_tokens: 8192,
+    temperature: 0.2,
+  };
+  if (stream) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: OPENROUTER_HEADERS,
+      body: JSON.stringify({ ...body, stream: true }),
+    });
+    if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}`);
+    return res.body;
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: OPENROUTER_HEADERS,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`OpenRouter HTTP ${res.status}`);
+  const data = await res.json();
+  const choice = data.choices?.[0];
+  const text = choice?.message?.content || '';
+  const usage = data.usage || {};
+  return {
+    content: text,
+    tokens_used: (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
+    model: data.model || model,
+    raw: data,
+  };
+}
+
+// ── Ollama (local-first, Qwen) ───────────────────────────────────────────────────
+async function ollamaChat({ messages, model, stream = false }) {
+  const base = (process.env.OLLAMA_BASE || 'http://localhost:11434').replace(/\/+$/, '');
+  const res = await fetch(`${base}/api/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages: messages.map((message) => ({
+        role: ['system', 'user', 'assistant'].includes(message.role) ? message.role : 'user',
+        content: typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? ''),
+      })),
+      stream,
+    }),
+  });
+  if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
+  return res.body;
+}
+
+// ── Provider-agnostic AI interface ─────────────────────────────────────────────
+
+export async function aiChat({ messages, model, stream = false }) {
+  const effectiveModel = model || resolveModel('general');
+  if (AI_PROVIDER === 'openrouter') {
+    if (stream) {
+      return openrouterChat({ messages, model: effectiveModel, stream: true });
+    }
+    const result = await openrouterChat({ messages, model: effectiveModel, stream: false });
+    return {
+      content: result.content,
+      tokens_used: result.tokens_used,
+      model: result.model,
+      raw: result.raw,
+    };
+  }
+
+  // Ollama (local-first Qwen) — kept modular so any provider can be swapped
+  if (AI_PROVIDER === 'ollama') {
+    if (stream) {
+      const stream = await ollamaChat({ messages, model: effectiveModel, stream: true });
+      return { stream, contentType: 'ollama' };
+    }
+    const res = await ollamaChat({ messages, model: effectiveModel, stream: false });
+    const data = await res.json();
+    const content = data.message?.content || '';
+    return { content, tokens_used: data.prompt_eval_count + data.eval_count || 0, model: data.model || effectiveModel, raw: data };
+  }
+
+  const formatted = messages.map(m => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: m.content,
+  }));
+  if (stream) {
+    const streamInstance = await anthropicStream(formatted, effectiveModel);
+    return {
+      stream: streamInstance,
+      contentType: 'anthropic',
+    };
+  }
+  const response = await anthropicChat(formatted, effectiveModel);
+  return {
+    content: response.content[0].text,
+    tokens_used: response.usage.input_tokens + response.usage.output_tokens,
+    model: response.model,
+    raw: response,
+  };
+}
+
+export async function aiAnalyze({ messages }) {
+  return aiChat({ messages, model: resolveModel('reasoning') });
+}
+
+export async function aiExtractEntities({ messages }) {
+  return aiChat({ messages, model: resolveModel('extraction') });
+}
+
+export async function aiSummarizeEvidence({ messages }) {
+  return aiChat({ messages, model: resolveModel('summarization') });
+}
+
+export async function aiGenerateFindings({ messages }) {
+  return aiChat({ messages, model: resolveModel('reasoning') });
+}
+
+export async function aiGenerateReport({ messages }) {
+  return aiChat({ messages, model: resolveModel('report') });
+}
+
+// ── Legacy compatibility wrappers ──────────────────────────────────────────────
+
+export async function chat({ messages, stream = false }) {
+  const result = await aiChat({ messages, stream });
+  if (stream && result.stream) {
+    return result.stream;
+  }
+  return result;
+}
 
 export async function* chatAgentStream(messages) {
   const conversationMessages = messages.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
-
   const MAX_ITERATIONS = 8;
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
-    const stream = await client.messages.stream({
-      model:      process.env.AI_MODEL || 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      system:     MIA_SYSTEM_PROMPT,
-      messages:   conversationMessages,
-      tools:      TOOL_DEFINITIONS,
-    });
+    if (AI_PROVIDER === 'openrouter') {
+      const stream = await openrouterChat({ messages: conversationMessages, model: resolveModel('general'), stream: true });
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(payload);
+            const delta = parsed.choices?.[0]?.delta?.content || '';
+            if (delta) yield { type: 'delta', text: delta };
+          } catch {
+            // ignore incomplete JSON
+          }
+        }
+      }
+      break;
+    }
 
-    let textBuffer  = '';
-    let toolUses    = [];
+    // Ollama (local-first Qwen)
+    if (AI_PROVIDER === 'ollama') {
+      const stream = await ollamaChat({ messages: conversationMessages, model: resolveModel('general'), stream: true });
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      outer: for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break outer;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const parsed = JSON.parse(trimmed);
+            const content = parsed.message?.content || '';
+            if (content) yield { type: 'delta', text: content };
+            if (parsed.done === true) break outer;
+          } catch {
+            // Ollama emits raw JSON SSE lines; ignore malformed ones
+          }
+        }
+      }
+      break;
+    }
+
+    const stream = await anthropicStream(conversationMessages);
+    let textBuffer = '';
+    let toolUses = [];
     let currentTool = null;
-    let inputBuf    = '';
-    let stopReason  = 'end_turn';
+    let inputBuf = '';
+    let stopReason = 'end_turn';
 
     for await (const event of stream) {
       if (event.type === 'content_block_start') {
@@ -136,7 +366,7 @@ export async function* chatAgentStream(messages) {
           // nothing yet
         } else if (event.content_block.type === 'tool_use') {
           currentTool = { id: event.content_block.id, name: event.content_block.name };
-          inputBuf    = '';
+          inputBuf = '';
         }
       }
 
@@ -153,7 +383,7 @@ export async function* chatAgentStream(messages) {
         try { currentTool.input = JSON.parse(inputBuf); } catch { currentTool.input = {}; }
         toolUses.push({ ...currentTool });
         currentTool = null;
-        inputBuf    = '';
+        inputBuf = '';
       }
 
       if (event.type === 'message_delta') {
@@ -163,7 +393,6 @@ export async function* chatAgentStream(messages) {
 
     if (stopReason !== 'tool_use' || !toolUses.length) break;
 
-    // Build assistant message with both text and tool_use blocks
     const assistantContent = [];
     if (textBuffer) assistantContent.push({ type: 'text', text: textBuffer });
     for (const t of toolUses) {
@@ -171,7 +400,6 @@ export async function* chatAgentStream(messages) {
     }
     conversationMessages.push({ role: 'assistant', content: assistantContent });
 
-    // Execute tools sequentially (yield must be in generator body, not in callbacks)
     const toolResults = [];
     for (const t of toolUses) {
       yield { type: 'tool_start', name: t.name, input: t.input };
@@ -179,38 +407,6 @@ export async function* chatAgentStream(messages) {
       yield { type: 'tool_done', name: t.name };
       toolResults.push({ type: 'tool_result', tool_use_id: t.id, content: JSON.stringify(result, null, 2) });
     }
-
     conversationMessages.push({ role: 'user', content: toolResults });
   }
-}
-
-// ── Legacy non-streaming (kept for backward compat) ───────────────────────────
-
-export async function chat({ messages, stream = false }) {
-  const formatted = messages.map(m => ({
-    role:    m.role === 'assistant' ? 'assistant' : 'user',
-    content: m.content,
-  }));
-
-  if (stream) {
-    return client.messages.stream({
-      model:      process.env.AI_MODEL || 'claude-sonnet-4-6',
-      max_tokens: 8192,
-      system:     MIA_SYSTEM_PROMPT,
-      messages:   formatted,
-    });
-  }
-
-  const response = await client.messages.create({
-    model:      process.env.AI_MODEL || 'claude-sonnet-4-6',
-    max_tokens: 8192,
-    system:     MIA_SYSTEM_PROMPT,
-    messages:   formatted,
-  });
-
-  return {
-    content:     response.content[0].text,
-    tokens_used: response.usage.input_tokens + response.usage.output_tokens,
-    model:       response.model,
-  };
 }

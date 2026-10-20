@@ -2,8 +2,8 @@ import '../styles/globals.css';
 import { Toaster } from 'react-hot-toast';
 
 export const metadata = {
-  title: 'SafeNestT — Mia Investigation Platform',
-  description: 'Fraud investigation, evidence collection, and case management by SafeNestT.',
+  title: 'MIA — RZ / Ronzoro AI',
+  description: 'Your personal AI assistant for conversation, memory, planning, and project work.',
   icons: { icon: '/favicon.ico' },
 };
 
